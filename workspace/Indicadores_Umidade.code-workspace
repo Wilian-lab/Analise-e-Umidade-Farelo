@@ -1,0 +1,14 @@
+﻿{
+  "folders": [
+    { "path": ".." }
+  ],
+  "settings": {
+    "python.defaultInterpreterPath": "E:\.venvs\Indicadores_Umidade\\Scripts\\python.exe",
+    "python.terminal.activateEnvironment": true,
+    "python.venvPath": "E:\\.venvs",
+    "python.venvFolders": [
+      "E:\\.venvs"
+    ],
+    "python.createEnvironment.trigger": "off"
+  }
+}
