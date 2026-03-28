@@ -1,3 +1,7 @@
-﻿pandas
+pandas
 jupyter
 matplotlib
+seaborn
+streamlit
+plotly
+openpyxl
