@@ -6,8 +6,11 @@ import plotly.graph_objects as go
 import streamlit as st
 
 BASE_DIR = Path(__file__).resolve().parents[1]
-MASTER_PATH = BASE_DIR / "logs" / "analise_umidade" / "df_master.csv"
-RESUMO_PATH = BASE_DIR / "logs" / "analise_umidade" / "resumo_dia.csv"
+APP_DATA_DIR = BASE_DIR / "app_data"
+MASTER_PATH = APP_DATA_DIR / "df_master.csv"
+RESUMO_PATH = APP_DATA_DIR / "resumo_dia.csv"
+MASTER_FALLBACK_PATH = BASE_DIR / "logs" / "analise_umidade" / "df_master.csv"
+RESUMO_FALLBACK_PATH = BASE_DIR / "logs" / "analise_umidade" / "resumo_dia.csv"
 
 COR_STATUS = {"bom": "#2E8B57", "ruim": "#C0392B"}
 COR_UMIDADE = "#1F4E79"
@@ -34,14 +37,17 @@ st.set_page_config(
 
 @st.cache_data
 def carregar_dados() -> tuple[pd.DataFrame, pd.DataFrame]:
-    if not MASTER_PATH.exists() or not RESUMO_PATH.exists():
+    master_path = MASTER_PATH if MASTER_PATH.exists() else MASTER_FALLBACK_PATH
+    resumo_path = RESUMO_PATH if RESUMO_PATH.exists() else RESUMO_FALLBACK_PATH
+
+    if not master_path.exists() or not resumo_path.exists():
         raise FileNotFoundError(
             "Arquivos consolidados nao encontrados. Rode primeiro: "
             r"`python src\analise_umidade.py`."
         )
 
-    df_master = pd.read_csv(MASTER_PATH, encoding="utf-8-sig")
-    resumo_dia = pd.read_csv(RESUMO_PATH, encoding="utf-8-sig")
+    df_master = pd.read_csv(master_path, encoding="utf-8-sig")
+    resumo_dia = pd.read_csv(resumo_path, encoding="utf-8-sig")
 
     df_master["data_hora"] = pd.to_datetime(df_master["data_hora"])
     df_master["data_ref"] = pd.to_datetime(df_master["data_ref"])
