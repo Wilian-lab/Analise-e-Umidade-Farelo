@@ -336,6 +336,25 @@ def construir_hover_contexto(row: pd.Series) -> str:
     )
 
 
+def construir_hover_scatter(row: pd.Series) -> str:
+    status = "Umidade boa" if row["status_umidade"] == "bom" else "Umidade ruim"
+
+    return (
+        f"<b>{row['data_hora']:%d/%m/%Y %H:%M}</b><br>"
+        f"<span style='color:#1F4E79'><b>Umidade:</b></span> {formatar_numero(row['umidade_final_farelo'])}%<br>"
+        f"<span style='color:#495057'><b>Status:</b></span> {status}<br>"
+        f"<span style='color:#495057'><b>Modo de moagem:</b></span> {formatar_texto(row['modo_moagem'])}<br>"
+        f"<span style='color:#495057'><b>Contexto:</b></span> {formatar_texto(row['contexto_secagem'])}<br>"
+        f"<span style='color:#FF9F1C'><b>Temp. Secador 3:</b></span> {formatar_numero(row['temperatura_saida_3'])} C<br>"
+        f"<span style='color:#4EA8DE'><b>Temp. Secador 1:</b></span> {formatar_numero(row['temperatura_saida_1'])} C<br>"
+        f"<span style='color:#7D8597'><b>Pressao vapor 3:</b></span> {formatar_numero(row['pressao_vapor_3'])}<br>"
+        f"<span style='color:#ADB5BD'><b>Pressao vapor 1:</b></span> {formatar_numero(row['pressao_vapor_1'])}<br>"
+        f"<span style='color:#2D6A4F'><b>Vazao HSW:</b></span> {formatar_numero(row['vazao_hsw'])}<br>"
+        f"<span style='color:#495057'><b>Retorno 3:</b></span> {formatar_numero(row['vazao_retorno_3'])}"
+        "<extra></extra>"
+    )
+
+
 def montar_tabela_contexto(df_base: pd.DataFrame, status: str) -> pd.DataFrame:
     df_status = df_base[df_base["status_umidade"] == status].copy()
     if df_status.empty:
@@ -628,27 +647,24 @@ def main() -> None:
 
     st.markdown(
         "Os valores acima sao o contexto operacional observado em cada grupo de umidade. "
-        "Variacoes entre modos de moagem sao esperadas â€” uma moagem e duas moagens operam em regimes diferentes."
+        "Variacoes entre modos de moagem sao esperadas; uma moagem e duas moagens operam em regimes diferentes."
     )
 
-    st.subheader("Temperatura de saida do Secador 3 Ã— Umidade final")
+    st.subheader("Temperatura de saida do Secador 3 x Umidade final")
+    df_scatter = df_filtrado.copy()
+    df_scatter["hover_scatter"] = df_scatter.apply(construir_hover_scatter, axis=1)
     fig_scatter = px.scatter(
-        df_filtrado,
+        df_scatter,
         x="temperatura_saida_3",
         y="umidade_final_farelo",
         color="status_umidade",
         symbol="modo_moagem",
         color_discrete_map=COR_STATUS,
-        hover_data={
-            "data_hora": True,
-            "modo_moagem": True,
-            "pressao_vapor_3": ":.2f",
-            "vazao_hsw": ":.2f",
-            "vazao_retorno_3": ":.2f",
-        },
+        custom_data=["hover_scatter"],
     )
     fig_scatter.add_hline(y=9, line_dash="dash", line_color="#D97706")
     fig_scatter.add_hline(y=12, line_dash="dash", line_color="#D97706")
+    fig_scatter.update_traces(hovertemplate="%{customdata[0]}")
     fig_scatter.update_layout(
         height=420,
         xaxis_title="Temperatura de saida do Secador 3",
@@ -657,6 +673,7 @@ def main() -> None:
         paper_bgcolor="#171A21",
         font=dict(color="#F5F7FA"),
         margin=dict(l=20, r=20, t=40, b=20),
+        hoverlabel=dict(bgcolor="#1F2430", font_size=12, font_color="#F8F9FA"),
     )
     st.plotly_chart(fig_scatter, use_container_width=True)
     st.markdown(
@@ -786,7 +803,7 @@ def main() -> None:
 
     st.subheader("Faixas operacionais observadas nos horarios de umidade boa")
     st.caption(
-        "Nao sao metas â€” sao os valores que estavam presentes quando a umidade ficou dentro da especificacao."
+        "Nao sao metas; sao os valores que estavam presentes quando a umidade ficou dentro da especificacao."
     )
     st.dataframe(
         montar_faixas_bons_por_modo(df_filtrado),
@@ -887,5 +904,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 
 
