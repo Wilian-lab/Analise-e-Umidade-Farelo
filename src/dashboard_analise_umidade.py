@@ -1,4 +1,4 @@
-from pathlib import Path
+﻿from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
@@ -71,7 +71,7 @@ def formatar_texto(valor: object, fallback: str = "Sem registro") -> str:
 def formatar_numero(valor: object, casas: int = 2, fallback: str = "-") -> str:
     if pd.isna(valor):
         return fallback
-    return f"{float(valor):.{casas}f}"
+    return f"{float(valor):.{casas}f}".replace(".", ",")
 
 
 def formatar_numero_com_unidade(
@@ -141,6 +141,19 @@ def resumir_faixa(df: pd.DataFrame, coluna: str, label: str, casas: int = 1) -> 
     if serie.min() == serie.max():
         return f"{label}: {minimo}"
     return f"{label}: de {minimo} ate {maximo}"
+
+
+def montar_intervalo_markdown(
+    df: pd.DataFrame, coluna: str, casas: int = 1, fallback: str = "sem registro"
+) -> str:
+    serie = df[coluna].dropna()
+    if serie.empty:
+        return fallback
+    minimo = formatar_numero(serie.min(), casas)
+    maximo = formatar_numero(serie.max(), casas)
+    if serie.min() == serie.max():
+        return f"**{minimo}**"
+    return f"**{minimo}** e **{maximo}**"
 
 
 def listar_horarios(df: pd.DataFrame) -> str:
@@ -239,27 +252,13 @@ def montar_resumo_operacional_dia(df_status: pd.DataFrame, status_label: str) ->
         or "sem registro"
     )
     mediana_umidade = formatar_numero(df_status["umidade_final_farelo"].median(), 2)
-    faixa_umidade = resumir_faixa(
-        df_status, "umidade_final_farelo", "Umidade", 2
-    ).replace("Umidade: ", "")
-    faixa_temp3 = resumir_faixa(
-        df_status, "temperatura_saida_3", "Secador 3", 1
-    ).replace("Secador 3: ", "")
-    faixa_temp1 = resumir_faixa(
-        df_status, "temperatura_saida_1", "Secador 1", 1
-    ).replace("Secador 1: ", "")
-    faixa_pressao3 = resumir_faixa(
-        df_status, "pressao_vapor_3", "Pressao vapor 3", 2
-    ).replace("Pressao vapor 3: ", "")
-    faixa_pressao1 = resumir_faixa(
-        df_status, "pressao_vapor_1", "Pressao vapor 1", 2
-    ).replace("Pressao vapor 1: ", "")
-    faixa_hsw = resumir_faixa(df_status, "vazao_hsw", "Vazao HSW", 1).replace(
-        "Vazao HSW: ", ""
-    )
-    faixa_retorno = resumir_faixa(df_status, "vazao_retorno_3", "Retorno", 1).replace(
-        "Retorno: ", ""
-    )
+    faixa_umidade = montar_intervalo_markdown(df_status, "umidade_final_farelo", casas=2)
+    faixa_temp3 = montar_intervalo_markdown(df_status, "temperatura_saida_3", casas=1)
+    faixa_temp1 = montar_intervalo_markdown(df_status, "temperatura_saida_1", casas=1)
+    faixa_pressao3 = montar_intervalo_markdown(df_status, "pressao_vapor_3", casas=2)
+    faixa_pressao1 = montar_intervalo_markdown(df_status, "pressao_vapor_1", casas=2)
+    faixa_hsw = montar_intervalo_markdown(df_status, "vazao_hsw", casas=1)
+    faixa_retorno = montar_intervalo_markdown(df_status, "vazao_retorno_3", casas=1)
     horarios = listar_horarios(df_status)
     cita_secador_1 = (
         df_status["modo_moagem"].fillna("").astype(str).str.contains("Ambas").any()
@@ -267,35 +266,36 @@ def montar_resumo_operacional_dia(df_status: pd.DataFrame, status_label: str) ->
 
     trecho_secador_1 = ""
     if cita_secador_1:
-        trecho_secador_1 = f", temperatura de saida do Secador 1 entre **{faixa_temp1.replace('de ', '').replace(' ate ', '** e **')}** °C"
+        trecho_secador_1 = (
+            f", temperatura de saida do Secador 1 entre {faixa_temp1} &deg;C"
+        )
 
     trecho_pressao_1 = ""
     if cita_secador_1:
-        trecho_pressao_1 = f" e pressao de vapor 1 entre **{faixa_pressao1.replace('de ', '').replace(' ate ', '** e **')}** kgf"
+        trecho_pressao_1 = f" e pressao de vapor 1 entre {faixa_pressao1} kgf"
 
     if status_label == "bom":
         return (
             f"Nos horarios {horarios}, a umidade ficou dentro da faixa especificada, "
-            f"com valores entre **{faixa_umidade.replace('de ', '').replace(' ate ', '** e **')}** "
+            f"com valores entre {faixa_umidade} "
             f"(mediana: **{mediana_umidade}**). Nesses momentos, a operacao registrou {modos}, "
-            f"com temperatura de saida do Secador 3 entre **{faixa_temp3.replace('de ', '').replace(' ate ', '** e **')}** °C, "
-            f"pressao de vapor 3 entre **{faixa_pressao3.replace('de ', '').replace(' ate ', '** e **')}** kgf"
+            f"com temperatura de saida do Secador 3 entre {faixa_temp3} &deg;C, "
+            f"pressao de vapor 3 entre {faixa_pressao3} kgf"
             f"{trecho_secador_1}{trecho_pressao_1}, "
-            f"vazao de agua pesada entre **{faixa_hsw.replace('de ', '').replace(' ate ', '** e **')}** "
-            f"e velocidade de retorno entre **{faixa_retorno.replace('de ', '').replace(' ate ', '** e **')}**."
+            f"vazao de agua pesada entre {faixa_hsw} "
+            f"e velocidade de retorno entre {faixa_retorno}."
         )
 
     return (
         f"Nos horarios {horarios}, a umidade ficou fora da faixa, "
-        f"com valores entre **{faixa_umidade.replace('de ', '').replace(' ate ', '** e **')}** "
+        f"com valores entre {faixa_umidade} "
         f"(mediana: **{mediana_umidade}**). Nesses momentos, a operacao registrou {modos}, "
-        f"com temperatura de saida do Secador 3 entre **{faixa_temp3.replace('de ', '').replace(' ate ', '** e **')}** °C, "
-        f"pressao de vapor 3 entre **{faixa_pressao3.replace('de ', '').replace(' ate ', '** e **')}** kgf"
+        f"com temperatura de saida do Secador 3 entre {faixa_temp3} &deg;C, "
+        f"pressao de vapor 3 entre {faixa_pressao3} kgf"
         f"{trecho_secador_1}{trecho_pressao_1}, "
-        f"vazao de agua pesada entre **{faixa_hsw.replace('de ', '').replace(' ate ', '** e **')}** "
-        f"e velocidade de retorno entre **{faixa_retorno.replace('de ', '').replace(' ate ', '** e **')}**."
+        f"vazao de agua pesada entre {faixa_hsw} "
+        f"e velocidade de retorno entre {faixa_retorno}."
     )
-
 
 def construir_hover_detalhado(row: pd.Series) -> str:
     status = "Dentro da faixa" if row["status_umidade"] == "bom" else "Fora da faixa"
@@ -628,10 +628,10 @@ def main() -> None:
 
     st.markdown(
         "Os valores acima sao o contexto operacional observado em cada grupo de umidade. "
-        "Variacoes entre modos de moagem sao esperadas — uma moagem e duas moagens operam em regimes diferentes."
+        "Variacoes entre modos de moagem sao esperadas â€” uma moagem e duas moagens operam em regimes diferentes."
     )
 
-    st.subheader("Temperatura de saida do Secador 3 × Umidade final")
+    st.subheader("Temperatura de saida do Secador 3 Ã— Umidade final")
     fig_scatter = px.scatter(
         df_filtrado,
         x="temperatura_saida_3",
@@ -717,30 +717,18 @@ def main() -> None:
     st.plotly_chart(fig_dia, use_container_width=True)
 
     datas_disponiveis = sorted(df_filtrado["data_ref"].dt.date.unique().tolist())
-    if (
-        "data_selecionada_rascunho" not in st.session_state
-        or st.session_state["data_selecionada_rascunho"] not in datas_disponiveis
-    ):
-        st.session_state["data_selecionada_rascunho"] = (
-            datas_disponiveis[0] if datas_disponiveis else None
-        )
-
     data_escolhida = st.selectbox(
         "Dia para detalhar",
         options=datas_disponiveis,
-        index=(
-            datas_disponiveis.index(st.session_state["data_selecionada_rascunho"])
-            if datas_disponiveis
-            else 0
-        ),
+        index=(len(datas_disponiveis) - 1 if datas_disponiveis else 0),
         format_func=lambda d: pd.to_datetime(d).strftime("%d/%m/%Y"),
+        key="data_detalhe_dashboard",
     )
-    st.session_state["data_selecionada_rascunho"] = data_escolhida
 
     dia_plot = (
         df_filtrado[
             df_filtrado["data_ref"].dt.date
-            == st.session_state["data_selecionada_rascunho"]
+            == data_escolhida
         ]
         .sort_values("data_hora")
         .copy()
@@ -798,7 +786,7 @@ def main() -> None:
 
     st.subheader("Faixas operacionais observadas nos horarios de umidade boa")
     st.caption(
-        "Nao sao metas — sao os valores que estavam presentes quando a umidade ficou dentro da especificacao."
+        "Nao sao metas â€” sao os valores que estavam presentes quando a umidade ficou dentro da especificacao."
     )
     st.dataframe(
         montar_faixas_bons_por_modo(df_filtrado),
@@ -899,3 +887,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
