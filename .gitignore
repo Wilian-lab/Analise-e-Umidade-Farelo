@@ -11,3 +11,6 @@ src/dashboard_streamlit.py
 PLANEJAMENTO_ANALISE_UMIDADE.md
 STATUS_ATUAL_ANALISE_UMIDADE.md
 src/main.ipynb
+Acompanhamento_Analise_Umidade.xlsx
+main.py
+src/dashboard_analise_umidade_rascunho.py
