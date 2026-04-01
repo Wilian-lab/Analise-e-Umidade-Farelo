@@ -5,8 +5,6 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-import dashboard_analise_umidade as base
-
 
 BASE_DIR = Path(__file__).resolve().parents[1]
 APP_DATA_DIR = BASE_DIR / "app_data"
@@ -14,6 +12,20 @@ MASTER_PATH = APP_DATA_DIR / "df_master.csv"
 RESUMO_PATH = APP_DATA_DIR / "resumo_dia.csv"
 MASTER_FALLBACK_PATH = BASE_DIR / "logs" / "analise_umidade" / "df_master.csv"
 RESUMO_FALLBACK_PATH = BASE_DIR / "logs" / "analise_umidade" / "resumo_dia.csv"
+
+COR_STATUS = {"bom": "#2E8B57", "ruim": "#C0392B"}
+COR_UMIDADE = "#1F4E79"
+COR_TEMP3 = "#FF9F1C"
+COR_TEMP1 = "#4EA8DE"
+COR_PRESSAO = "#7D8597"
+PARAMETROS_COMPARACAO = [
+    ("temperatura_saida_3", "temperatura_saida_3"),
+    ("temperatura_saida_1", "temperatura_saida_1"),
+    ("pressao_vapor_3", "pressao_vapor_3"),
+    ("pressao_vapor_1", "pressao_vapor_1"),
+    ("vazao_hsw", "vazao_hsw"),
+    ("vazao_retorno_3", "vazao_retorno_3"),
+]
 
 MODOS_GRAFICO = ["Moagem A", "Moagem B", "Ambas"]
 MAPA_TEMPERATURAS = [
@@ -46,6 +58,484 @@ st.set_page_config(
     page_icon="U",
     layout="wide",
 )
+
+
+@st.cache_data
+def carregar_dados() -> tuple[pd.DataFrame, pd.DataFrame]:
+    master_path = MASTER_PATH if MASTER_PATH.exists() else MASTER_FALLBACK_PATH
+    resumo_path = RESUMO_PATH if RESUMO_PATH.exists() else RESUMO_FALLBACK_PATH
+
+    if not master_path.exists() or not resumo_path.exists():
+        raise FileNotFoundError(
+            "Arquivos consolidados nao encontrados. Rode primeiro: "
+            r"`python src\analise_umidade.py`."
+        )
+
+    df_master = pd.read_csv(master_path, encoding="utf-8-sig")
+    resumo_dia = pd.read_csv(resumo_path, encoding="utf-8-sig")
+
+    df_master["data_hora"] = pd.to_datetime(df_master["data_hora"])
+    df_master["data_ref"] = pd.to_datetime(df_master["data_ref"])
+    resumo_dia["data_ref"] = pd.to_datetime(resumo_dia["data_ref"])
+
+    texto_cols = ["Fato", "Causa", "Acao", "modo_moagem", "contexto_secagem"]
+    for col in texto_cols:
+        if col not in df_master.columns:
+            df_master[col] = ""
+        df_master[col] = df_master[col].fillna("")
+
+    return df_master, resumo_dia
+
+
+def formatar_texto(valor: object, fallback: str = "Sem registro") -> str:
+    if pd.isna(valor) or str(valor).strip() == "":
+        return fallback
+    return str(valor)
+
+
+def formatar_numero(valor: object, casas: int = 2, fallback: str = "-") -> str:
+    if pd.isna(valor):
+        return fallback
+    return f"{float(valor):.{casas}f}".replace(".", ",")
+
+
+def formatar_numero_com_unidade(
+    valor: object, unidade: str = "", casas: int = 2, fallback: str = "Sem leitura"
+) -> str:
+    if pd.isna(valor):
+        return fallback
+    numero = f"{float(valor):.{casas}f}"
+    return f"{numero} {unidade}".strip()
+
+
+def classificar_contexto_secagem(row: pd.Series) -> str:
+    modo = formatar_texto(row.get("modo_moagem", ""), fallback="")
+    temp1 = row.get("temperatura_saida_1")
+
+    if "Ambas" in modo:
+        return "Duas moagens | Secadores 1 e 3"
+    if pd.notna(temp1) and temp1 >= 50:
+        return "Uma moagem | Secador 1 ativo"
+    return "Uma moagem | Secador 3 ativo"
+
+
+def resumir_dia(df_dia: pd.DataFrame) -> dict[str, object]:
+    if df_dia.empty:
+        return {
+            "total": 0,
+            "qtd_bom": 0,
+            "qtd_ruim": 0,
+            "pct_bom": 0.0,
+            "modos": "Sem dados",
+            "contextos": "Sem dados",
+            "casca_recente": 0,
+        }
+
+    total = len(df_dia)
+    qtd_bom = int((df_dia["status_umidade"] == "bom").sum())
+    qtd_ruim = int((df_dia["status_umidade"] == "ruim").sum())
+
+    modos = (
+        ", ".join(
+            sorted(x for x in df_dia["modo_moagem"].dropna().unique().tolist() if x)
+        )
+        or "Sem registro"
+    )
+    contextos = (
+        ", ".join(sorted(df_dia["contexto_secagem"].dropna().unique().tolist()))
+        or "Sem registro"
+    )
+
+    return {
+        "total": total,
+        "qtd_bom": qtd_bom,
+        "qtd_ruim": qtd_ruim,
+        "pct_bom": round((qtd_bom / total) * 100, 1) if total else 0.0,
+        "modos": modos,
+        "contextos": contextos,
+        "casca_recente": int(df_dia["casca_umida_1h_ou_2h_antes"].sum()),
+    }
+
+
+def resumir_faixa(df: pd.DataFrame, coluna: str, label: str, casas: int = 1) -> str:
+    serie = df[coluna].dropna()
+    if serie.empty:
+        return f"{label}: sem registro"
+    minimo = formatar_numero(serie.min(), casas)
+    maximo = formatar_numero(serie.max(), casas)
+    if serie.min() == serie.max():
+        return f"{label}: {minimo}"
+    return f"{label}: de {minimo} ate {maximo}"
+
+
+def montar_intervalo_markdown(
+    df: pd.DataFrame, coluna: str, casas: int = 1, fallback: str = "sem registro"
+) -> str:
+    serie = df[coluna].dropna()
+    if serie.empty:
+        return fallback
+    minimo = formatar_numero(serie.min(), casas)
+    maximo = formatar_numero(serie.max(), casas)
+    if serie.min() == serie.max():
+        return f"**{minimo}**"
+    return f"**{minimo}** e **{maximo}**"
+
+
+def listar_horarios(df: pd.DataFrame) -> str:
+    if df.empty:
+        return "sem horarios"
+    return ", ".join(df["data_hora"].dt.strftime("%H:%M").tolist())
+
+
+def montar_tabela_status_dia(df_status: pd.DataFrame) -> pd.DataFrame:
+    if df_status.empty:
+        return pd.DataFrame()
+
+    tabela = df_status.copy()
+    tabela["horario"] = tabela["data_hora"].dt.strftime("%H:%M")
+    tabela["casca_umida_recente"] = tabela["casca_umida_1h_ou_2h_antes"].map(
+        {True: "Sim", False: "Nao"}
+    )
+    tabela["Fato"] = tabela["Fato"].apply(formatar_texto)
+    tabela["Causa"] = tabela["Causa"].apply(formatar_texto)
+    tabela["Acao"] = tabela["Acao"].apply(formatar_texto)
+
+    return tabela[
+        [
+            "horario",
+            "umidade_final_farelo",
+            "modo_moagem",
+            "contexto_secagem",
+            "temperatura_saida_3",
+            "temperatura_saida_1",
+            "pressao_vapor_3",
+            "pressao_vapor_1",
+            "vazao_hsw",
+            "vazao_retorno_3",
+            "casca_umida_recente",
+            "Fato",
+            "Causa",
+            "Acao",
+        ]
+    ]
+
+
+def montar_top_dias_descritivo(
+    resumo_base: pd.DataFrame, df_base: pd.DataFrame, status: str, top_n: int = 10
+) -> pd.DataFrame:
+    coluna_pct = "pct_bom" if status == "bom" else "pct_ruim"
+    ordenacao_media = True if status == "bom" else False
+    top = (
+        resumo_base.sort_values(
+            [coluna_pct, "media_umidade"], ascending=[False, ordenacao_media]
+        )
+        .head(top_n)
+        .copy()
+    )
+
+    linhas = []
+    for _, row in top.iterrows():
+        data_ref = row["data_ref"]
+        df_dia = (
+            df_base[df_base["data_ref"] == data_ref].sort_values("data_hora").copy()
+        )
+        df_status = df_dia[df_dia["status_umidade"] == status].copy()
+        linhas.append(
+            {
+                "data": pd.to_datetime(data_ref).strftime("%d/%m/%Y"),
+                "percentual_dia": round(float(row[coluna_pct]) * 100, 1),
+                "horarios": ", ".join(
+                    df_status["data_hora"].dt.strftime("%H:%M").tolist()
+                ),
+                "moagens": ", ".join(
+                    sorted(
+                        x
+                        for x in df_status["modo_moagem"].dropna().unique().tolist()
+                        if x
+                    )
+                )
+                or "Sem registro",
+                "secadores": ", ".join(
+                    sorted(df_status["contexto_secagem"].dropna().unique().tolist())
+                )
+                or "Sem registro",
+                "umidade": df_status["umidade_final_farelo"].round(2).tolist(),
+            }
+        )
+
+    return pd.DataFrame(linhas)
+
+
+def montar_resumo_operacional_dia(df_status: pd.DataFrame, status_label: str) -> str:
+    if df_status.empty:
+        if status_label == "bom":
+            return "Nao houve medicoes dentro da faixa de umidade neste dia."
+        return "Nao houve medicoes fora da faixa neste dia."
+
+    modos = (
+        ", ".join(sorted(x for x in df_status["modo_moagem"].dropna().unique() if x))
+        or "sem registro"
+    )
+    mediana_umidade = formatar_numero(df_status["umidade_final_farelo"].median(), 2)
+    faixa_umidade = montar_intervalo_markdown(df_status, "umidade_final_farelo", casas=2)
+    faixa_temp3 = montar_intervalo_markdown(df_status, "temperatura_saida_3", casas=1)
+    faixa_temp1 = montar_intervalo_markdown(df_status, "temperatura_saida_1", casas=1)
+    faixa_pressao3 = montar_intervalo_markdown(df_status, "pressao_vapor_3", casas=2)
+    faixa_pressao1 = montar_intervalo_markdown(df_status, "pressao_vapor_1", casas=2)
+    faixa_hsw = montar_intervalo_markdown(df_status, "vazao_hsw", casas=1)
+    faixa_retorno = montar_intervalo_markdown(df_status, "vazao_retorno_3", casas=1)
+    horarios = listar_horarios(df_status)
+    cita_secador_1 = (
+        df_status["modo_moagem"].fillna("").astype(str).str.contains("Ambas").any()
+    )
+
+    trecho_secador_1 = ""
+    if cita_secador_1:
+        trecho_secador_1 = (
+            f", temperatura de saida do Secador 1 entre {faixa_temp1} &deg;C"
+        )
+
+    trecho_pressao_1 = ""
+    if cita_secador_1:
+        trecho_pressao_1 = f" e pressao de vapor 1 entre {faixa_pressao1} kgf"
+
+    if status_label == "bom":
+        return (
+            f"Nos horarios {horarios}, a umidade ficou dentro da faixa especificada, "
+            f"com valores entre {faixa_umidade} "
+            f"(mediana: **{mediana_umidade}**). Nesses momentos, a operacao registrou {modos}, "
+            f"com temperatura de saida do Secador 3 entre {faixa_temp3} &deg;C, "
+            f"pressao de vapor 3 entre {faixa_pressao3} kgf"
+            f"{trecho_secador_1}{trecho_pressao_1}, "
+            f"vazao de agua pesada entre {faixa_hsw} "
+            f"e velocidade de retorno entre {faixa_retorno}."
+        )
+
+    return (
+        f"Nos horarios {horarios}, a umidade ficou fora da faixa, "
+        f"com valores entre {faixa_umidade} "
+        f"(mediana: **{mediana_umidade}**). Nesses momentos, a operacao registrou {modos}, "
+        f"com temperatura de saida do Secador 3 entre {faixa_temp3} &deg;C, "
+        f"pressao de vapor 3 entre {faixa_pressao3} kgf"
+        f"{trecho_secador_1}{trecho_pressao_1}, "
+        f"vazao de agua pesada entre {faixa_hsw} "
+        f"e velocidade de retorno entre {faixa_retorno}."
+    )
+
+
+def construir_hover_contexto(row: pd.Series) -> str:
+    status = "Umidade boa" if row["status_umidade"] == "bom" else "Umidade ruim"
+
+    return (
+        f"<b>Status da umidade:</b> {status}<br>"
+        f"<b>Modo de moagem observado:</b> {formatar_texto(row['modo_moagem'])}<br>"
+        f"<b>Contexto:</b> {formatar_texto(row['contexto_secagem'])}<br>"
+        f"<span style='color:#1F4E79'><b>Mediana da umidade:</b></span> {formatar_numero(row['mediana_umidade'])}<br>"
+        f"<span style='color:#FF9F1C'><b>Temp. Secador 3:</b></span> {formatar_numero(row['mediana_temp3'])} C<br>"
+        f"<span style='color:#4EA8DE'><b>Temp. Secador 1:</b></span> {formatar_numero(row['mediana_temp1'])} C<br>"
+        f"<span style='color:#7D8597'><b>Pressao vapor 3:</b></span> {formatar_numero(row['mediana_pressao3'])}<br>"
+        f"<span style='color:#ADB5BD'><b>Pressao vapor 1:</b></span> {formatar_numero(row['mediana_pressao1'])}<br>"
+        f"<span style='color:#2D6A4F'><b>Vazao HSW:</b></span> {formatar_numero(row['mediana_vazao_hsw'])}<br>"
+        f"<b>Medicoes:</b> {int(row['medicoes'])}"
+        "<extra></extra>"
+    )
+
+
+def montar_tabela_contexto(df_base: pd.DataFrame, status: str) -> pd.DataFrame:
+    df_status = df_base[df_base["status_umidade"] == status].copy()
+    if df_status.empty:
+        return pd.DataFrame(
+            columns=[
+                "modo_moagem",
+                "medicoes",
+                "temp_sec3",
+                "temp_sec1",
+                "pressao_v3",
+                "pressao_v1",
+                "vazao_hsw",
+                "retorno_3",
+            ]
+        )
+
+    tabela = (
+        df_status.groupby("modo_moagem")
+        .agg(
+            medicoes=("umidade_final_farelo", "count"),
+            temp_sec3=("temperatura_saida_3", "median"),
+            temp_sec1=("temperatura_saida_1", "median"),
+            pressao_v3=("pressao_vapor_3", "median"),
+            pressao_v1=("pressao_vapor_1", "median"),
+            vazao_hsw=("vazao_hsw", "median"),
+            retorno_3=("vazao_retorno_3", "median"),
+        )
+        .reset_index()
+    )
+    return tabela.round(2)
+
+
+def montar_faixas_bons_por_modo(df_base: pd.DataFrame) -> pd.DataFrame:
+    df_bom = df_base[df_base["status_umidade"] == "bom"].copy()
+    if df_bom.empty:
+        return pd.DataFrame(
+            columns=[
+                "modo_moagem",
+                "parametro",
+                "minimo",
+                "mediana",
+                "maximo",
+                "medicoes",
+            ]
+        )
+
+    df_melt = df_bom.melt(
+        id_vars=["modo_moagem"],
+        value_vars=[col for col, _ in PARAMETROS_COMPARACAO],
+        var_name="parametro",
+        value_name="valor",
+    )
+    tabela = (
+        df_melt.groupby(["modo_moagem", "parametro"])
+        .agg(
+            minimo=("valor", "min"),
+            mediana=("valor", "median"),
+            maximo=("valor", "max"),
+            medicoes=("valor", "count"),
+        )
+        .reset_index()
+        .round(2)
+    )
+    return tabela
+
+
+def construir_hover_detalhado(row: pd.Series) -> str:
+    status = "Dentro da faixa" if row["status_umidade"] == "bom" else "Fora da faixa"
+    casca = "Sim" if row["casca_umida_1h_ou_2h_antes"] else "Nao"
+
+    return (
+        f"<b>{row['data_hora']:%d/%m/%Y %H:%M}</b><br>"
+        f"<span style='color:#1F4E79'><b>Umidade:</b></span> {formatar_numero(row['umidade_final_farelo'])}%<br>"
+        f"<span style='color:#495057'><b>Status:</b></span> {status}<br>"
+        f"<span style='color:#495057'><b>Modo de moagem:</b></span> {formatar_texto(row['modo_moagem'])}<br>"
+        f"<span style='color:#495057'><b>Contexto:</b></span> {formatar_texto(row['contexto_secagem'])}<br>"
+        f"<span style='color:#FF9F1C'><b>Temp. Secador 3:</b></span> {formatar_numero(row['temperatura_saida_3'])} C<br>"
+        f"<span style='color:#4EA8DE'><b>Temp. Secador 1:</b></span> {formatar_numero(row['temperatura_saida_1'])} C<br>"
+        f"<span style='color:#7D8597'><b>Pressao vapor 3:</b></span> {formatar_numero(row['pressao_vapor_3'])}<br>"
+        f"<span style='color:#ADB5BD'><b>Pressao vapor 1:</b></span> {formatar_numero(row['pressao_vapor_1'])}<br>"
+        f"<span style='color:#2D6A4F'><b>Vazao HSW:</b></span> {formatar_numero(row['vazao_hsw'])}<br>"
+        f"<span style='color:#495057'><b>Retorno 3:</b></span> {formatar_numero(row['vazao_retorno_3'])}<br>"
+        f"<span style='color:#495057'><b>Casca umida recente:</b></span> {casca}<br>"
+        "<extra></extra>"
+    )
+
+
+def montar_figura_umidade_barras(dia_plot: pd.DataFrame) -> go.Figure:
+    figura = go.Figure()
+    figura.add_trace(
+        go.Bar(
+            x=dia_plot["data_hora"],
+            y=dia_plot["umidade_final_farelo"],
+            marker=dict(
+                color=dia_plot["status_umidade"].map(COR_STATUS),
+                line=dict(color="#FFFFFF", width=1.2),
+            ),
+            text=dia_plot["umidade_final_farelo"].map(lambda x: formatar_numero(x, 1)),
+            textposition="outside",
+            hovertemplate=dia_plot["hover_detalhado"],
+            showlegend=False,
+        )
+    )
+    figura.add_hline(y=9, line_dash="dash", line_color="#D97706")
+    figura.add_hline(y=12, line_dash="dash", line_color="#D97706")
+    figura.update_layout(
+        height=380,
+        xaxis=dict(title="Horario", tickformat="%H:%M"),
+        yaxis=dict(title="Umidade final farelo", rangemode="tozero"),
+        plot_bgcolor="#171A21",
+        paper_bgcolor="#171A21",
+        font=dict(color="#F5F7FA"),
+        margin=dict(l=20, r=20, t=40, b=20),
+    )
+    return figura
+
+
+def montar_figura_temperaturas_vapor(dia_plot: pd.DataFrame) -> go.Figure:
+    figura = go.Figure()
+    figura.add_trace(
+        go.Scatter(
+            x=dia_plot["data_hora"],
+            y=dia_plot["temperatura_saida_3"],
+            mode="lines+markers",
+            name="Temp. Secador 3",
+            line=dict(color=COR_TEMP3, width=2.5),
+        )
+    )
+    if dia_plot["temperatura_saida_1"].notna().any():
+        figura.add_trace(
+            go.Scatter(
+                x=dia_plot["data_hora"],
+                y=dia_plot["temperatura_saida_1"],
+                mode="lines+markers",
+                name="Temp. Secador 1",
+                line=dict(color=COR_TEMP1, width=2, dash="dot"),
+            )
+        )
+    figura.add_trace(
+        go.Scatter(
+            x=dia_plot["data_hora"],
+            y=dia_plot["pressao_vapor_3"],
+            mode="lines+markers",
+            name="Pressao vapor 3",
+            yaxis="y2",
+            line=dict(color=COR_PRESSAO, width=2),
+        )
+    )
+    if dia_plot["pressao_vapor_1"].notna().any():
+        figura.add_trace(
+            go.Scatter(
+                x=dia_plot["data_hora"],
+                y=dia_plot["pressao_vapor_1"],
+                mode="lines+markers",
+                name="Pressao vapor 1",
+                yaxis="y2",
+                line=dict(color="#ADB5BD", width=2, dash="dot"),
+            )
+        )
+    figura.update_layout(
+        height=380,
+        xaxis=dict(title="Horario", tickformat="%H:%M"),
+        yaxis=dict(title="Temperaturas"),
+        yaxis2=dict(title="Pressao vapor", overlaying="y", side="right"),
+        plot_bgcolor="#171A21",
+        paper_bgcolor="#171A21",
+        font=dict(color="#F5F7FA"),
+        margin=dict(l=20, r=20, t=40, b=20),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+    )
+    return figura
+
+
+def montar_figura_hsw(dia_plot: pd.DataFrame) -> go.Figure:
+    figura = go.Figure()
+    figura.add_trace(
+        go.Bar(
+            x=dia_plot["data_hora"],
+            y=dia_plot["vazao_hsw"],
+            marker=dict(color="#74C69D", line=dict(color="#FFFFFF", width=1.2)),
+            text=dia_plot["vazao_hsw"].map(lambda x: formatar_numero(x, 1)),
+            textposition="outside",
+            showlegend=False,
+        )
+    )
+    figura.update_layout(
+        height=380,
+        xaxis=dict(title="Horario", tickformat="%H:%M"),
+        yaxis=dict(title="Vazao de agua pesada", rangemode="tozero"),
+        plot_bgcolor="#171A21",
+        paper_bgcolor="#171A21",
+        font=dict(color="#F5F7FA"),
+        margin=dict(l=20, r=20, t=40, b=20),
+    )
+    return figura
 
 
 def construir_hover_secador(row: pd.Series) -> str:
@@ -309,8 +799,8 @@ def montar_resumo_operacional_modo(df_base: pd.DataFrame, modo: str) -> str:
 def renderizar_secao_temperatura_umidade_por_moagem(df_filtrado: pd.DataFrame) -> None:
     st.subheader("Temperatura de saida dos Secadores 1 e 3 x Umidade final")
     st.markdown(
-        "Rascunho da alteracao: os graficos abaixo foram separados por modo de moagem "
-        "e usam apenas os horarios reais registrados em cada analise."
+        "Os graficos abaixo foram separados por modo de moagem "
+        "e usam apenas os registros reais observados em cada analise."
     )
     st.markdown(
         """
@@ -536,7 +1026,6 @@ def main() -> None:
     ) | df_master["casca_umida_agora"].shift(2, fill_value=False)
 
     st.title("Analise de Umidade do Farelo e Parametros de Secagem")
-    st.caption("Arquivo de rascunho para consolidacao antes de alterar o dashboard principal.")
 
     with st.sidebar:
         st.header("Filtros")
@@ -737,4 +1226,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 
